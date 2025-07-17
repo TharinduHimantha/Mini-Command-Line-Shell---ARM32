@@ -2,7 +2,7 @@
 
 .data @ known strings and variables
 
-cli_prompt:		.asciz "ARM32_cli> "
+cli_prompt:	.asciz "ARM32_cli> "
 input_format:   .asciz "%s"
 
 
