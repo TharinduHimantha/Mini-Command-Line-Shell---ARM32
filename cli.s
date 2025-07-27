@@ -642,6 +642,13 @@ main:
 @ The input taken from the user is stored in variable 'buffer'
 @ ------------------------------------------
 
+
+    	
+	bl get_time						@ getting the start time and storing it
+	ldr r1, =start_time
+	str r0, [r1]
+
+
 shell_loop:
     ldr r0, =cli_prompt     @ Load the CLI prompt string address to r0
     bl printf               @ Print the prompt to the terminal
