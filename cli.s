@@ -38,7 +38,7 @@ __data_start:
 	encrypt_format_full: .asciz "encrypt %d %s"
 	encrypt_usage:      .asciz "Usage: encrypt <shift> <text>\n"
 
-    uptime_cmd:  .asciz "performance"			@ command to trigger show_performance()
+   perf_cmd:  .asciz "performance"			@ command to trigger show_performance()
 	uptime_msg:  .asciz "Uptime: %02d:%02d:%02d\n"		@to show uptime
 
 	@ CPU time showing format
@@ -55,6 +55,20 @@ __data_start:
 	text_size_:  .asciz "\t.text  : %d bytes\n"
 	data_size_:  .asciz "\t.data  : %d bytes\n"
 	bss_size_:   .asciz "\t.bss   : %d bytes\n"
+
+	@ reading and writing related data for log.txt
+	filename:     .asciz "log.txt"
+	write_mode:   .asciz "w"
+	read_mode:    .asciz "r"
+	fmt_out:      .asciz "%d %d\n"
+	fmt_in:       .asciz "%d %d"
+	
+	read1:        .word 0		@to read and store values from file
+	read2:        .word 0
+
+	@ last launch info displaying related strings
+	last_session: .asciz "\nLast session info\n%d days %02d h %02d min ago\n"
+	last_launch_dur: .asciz "Session duration: %02d:%02d:%02d\n\n"
 
 
 @just for testing, clear up afterwards
@@ -130,9 +144,17 @@ clear_string_buffer:
 
 
 
-
 show_performance:
 
+@ -----------------------------------------------
+@ Function: show_performance
+@ Description: Show related info of the program
+@ More close working with hardware system calls
+@ File handling of log.txt
+@ Includes: UpTime, CPU times used, Idle time
+@ Total memory used, Segment sizes, Last launch info from log
+@ Implemented several helper functions for easiness
+@ -------------------------------------------------
 
 
 	push {lr}
@@ -219,10 +241,63 @@ show_performance:
 	bl printf
 	bl section_size
 
+
+
+	@@ Last launch
+	ldr r0, =filename		 @ read log info from the log.txt
+    ldr r1, =read_mode       @ mode "r" for reading
+    bl fopen
+    mov r4, r0               @ FILE* 
+
+	cmp r4,#0				 @ if file not found
+	beq skip
+
+    mov r0, r4			     @ File *
+    ldr r1, =fmt_in          @ "%d %d"
+    ldr r2, =read1			 @ prev session started
+    ldr r3, =read2			 @ prev session duration
+    bl fscanf                @ fscanf(fp, "%d %d", &read1, &read2)
+
+    mov r0, r4
+    bl fclose				@ close the file
+
+
+	bl get_time				@ current Time
+	ldr r1, =read1			@ previous session started
+	ldr r1, [r1]
+	sub r0,r0,r1			@ how long ago was prev Session
+	bl time_format			@ convert to proper time format
+	mov r3,r1				@ r3<- min
+	mov r1, #24
+	bl divider				@ hours/24 = days
+	push {r0,r1}			@ push days, hours for easy handling
+	ldr r0, =last_session	
+	pop {r1,r2}
+	bl printf				@ when was the last launch
+
+
+	ldr r0, =read2			@ last launch duration
+	ldr r0, [r0]
+	bl time_format
+	push {r0,r1,r2}			@ push to stack for easy handling
+	ldr r0, =last_launch_dur
+	pop {r1,r2,r3}
+	bl printf				@ the duration of last cli launch
+
+
+
+
+	skip:
     pop {pc}
 
 
 section_size:
+@ ------------------------------------------------------
+@ Function: section_size
+@ Description: Find the segmented sizes of .text, .bss, .data in the program
+@ Use established labels for this
+@ --------------------------------------------------------
+
     push {lr}
 
 	@ the size of each segment in the program
@@ -352,15 +427,34 @@ exit_:
 @ Function: exit
 @ Cli command: exit  (exit_cmd)
 @ Description: Exits from the program
+@ Log the current session start, session time before exit
 @ ----------------------------------------
-	ldr r0, =exit_msg       @ Load exit message string address into r0
-	bl printf               @ Print exit message to terminal
+	ldr r0, =exit_msg
+	bl printf
 
-	mov r0, #0              @ Set return code 0 (indicating success)
-    mov r7, #1              @ Linux syscall number for exit
-    svc #0                  @ Software interrupt to invoke syscall and terminate program
+	@ log session info before exit
+	ldr r0, =filename        @ filename
+    ldr r1, =write_mode      @ "w" write mode
+    bl fopen                 @ fopen("log.txt", "w")
+    mov r4, r0               @ FILE* in r4
+
+    ldr r1, =fmt_out         
+    ldr r2, =start_time
+    ldr r2, [r2]             @ session started time
+
+	bl get_time
+	sub r3, r0, r2			 @ session duration
+
+    mov r0, r4               @ FILE*
+    bl fprintf                
+
+    mov r0, r4
+    bl fclose                @ fclose(fp)
+
+	mov r0, #0      @ exit code = 0 (success)
+    mov r7, #1      @ sys_exit and software inturrupt
+    svc #0     
 	
-
 help:
 
 @ ----------------------------------------
@@ -588,7 +682,7 @@ shell_loop:
 
     @ Check for performance command
     ldr r0, =buffer         @ Load buffer
-    ldr r1, =uptime_cmd     @ Load "performance"
+    ldr r1, =perf_cmd     @ Load "performance"
     bl strcmp               @ Compare input with "performance"
     cmp r0, #0              @ If result is 0, strings match
     beq call_performance    @ If matched, go to performance

@@ -1,5 +1,5 @@
 @ --------------------------------------------
-@ ARM32 CLI
+@ Assembly Project
 @ Group 56
 @ E/22/421  -  W P T H Weerasinghe 
 @ E/22/182  -  K P W D R Kariyawasam
@@ -9,7 +9,7 @@
 __data_start:
 
 
-	cli_prompt:		.asciz "ARM32_cli> "
+	cli_prompt:		.asciz "shell56>> "
 	input_format:   .asciz "%49[^\n]"		@ read upto 49 char or '\n' is met
 
 @ to clear up the buffers
@@ -24,7 +24,7 @@ __data_start:
 	exit_msg: .asciz "Exiting the Shell\n"	@ Exiting message
 
 	help_cmd: .asciz "help"
-    help_msg: .asciz "Available commands:\n - hello\n - exit\n - help\n - clear\n - encrypt <shift> <text>\n"
+    help_msg: .asciz "Available commands:\n - hello\n - exit\n - help\n - clear\n - performance\n - encrypt <shift> <text>\n"
 
     clear_cmd: .asciz "clear"
     clear_seq: .asciz "\033[2J\033[H"     @ ANSI escape to clear terminal
@@ -38,7 +38,7 @@ __data_start:
 	encrypt_format_full: .asciz "encrypt %d %s"
 	encrypt_usage:      .asciz "Usage: encrypt <shift> <text>\n"
 
-    uptime_cmd:  .asciz "performance"			@ command to trigger show_performance()
+   perf_cmd:  .asciz "performance"			@ command to trigger show_performance()
 	uptime_msg:  .asciz "Uptime: %02d:%02d:%02d\n"		@to show uptime
 
 	@ CPU time showing format
@@ -55,6 +55,20 @@ __data_start:
 	text_size_:  .asciz "\t.text  : %d bytes\n"
 	data_size_:  .asciz "\t.data  : %d bytes\n"
 	bss_size_:   .asciz "\t.bss   : %d bytes\n"
+
+	@ reading and writing related data for log.txt
+	filename:     .asciz "log.txt"
+	write_mode:   .asciz "w"
+	read_mode:    .asciz "r"
+	fmt_out:      .asciz "%d %d\n"
+	fmt_in:       .asciz "%d %d"
+	
+	read1:        .word 0		@to read and store values from file
+	read2:        .word 0
+
+	@ last launch info displaying related strings
+	last_session: .asciz "\nLast session info\n%d days %02d h %02d min ago\n"
+	last_launch_dur: .asciz "Session duration: %02d:%02d:%02d\n\n"
 
 
 @just for testing, clear up afterwards
@@ -130,9 +144,17 @@ clear_string_buffer:
 
 
 
-
 show_performance:
 
+@ -----------------------------------------------
+@ Function: show_performance
+@ Description: Show related info of the program
+@ More close working with hardware system calls
+@ File handling of log.txt
+@ Includes: UpTime, CPU times used, Idle time
+@ Total memory used, Segment sizes, Last launch info from log
+@ Implemented several helper functions for easiness
+@ -------------------------------------------------
 
 
 	push {lr}
@@ -219,10 +241,63 @@ show_performance:
 	bl printf
 	bl section_size
 
+
+
+	@@ Last launch
+	ldr r0, =filename		 @ read log info from the log.txt
+    ldr r1, =read_mode       @ mode "r" for reading
+    bl fopen
+    mov r4, r0               @ FILE* 
+
+	cmp r4,#0				 @ if file not found
+	beq skip
+
+    mov r0, r4			     @ File *
+    ldr r1, =fmt_in          @ "%d %d"
+    ldr r2, =read1			 @ prev session started
+    ldr r3, =read2			 @ prev session duration
+    bl fscanf                @ fscanf(fp, "%d %d", &read1, &read2)
+
+    mov r0, r4
+    bl fclose				@ close the file
+
+
+	bl get_time				@ current Time
+	ldr r1, =read1			@ previous session started
+	ldr r1, [r1]
+	sub r0,r0,r1			@ how long ago was prev Session
+	bl time_format			@ convert to proper time format
+	mov r3,r1				@ r3<- min
+	mov r1, #24
+	bl divider				@ hours/24 = days
+	push {r0,r1}			@ push days, hours for easy handling
+	ldr r0, =last_session	
+	pop {r1,r2}
+	bl printf				@ when was the last launch
+
+
+	ldr r0, =read2			@ last launch duration
+	ldr r0, [r0]
+	bl time_format
+	push {r0,r1,r2}			@ push to stack for easy handling
+	ldr r0, =last_launch_dur
+	pop {r1,r2,r3}
+	bl printf				@ the duration of last cli launch
+
+
+
+
+	skip:
     pop {pc}
 
 
 section_size:
+@ ------------------------------------------------------
+@ Function: section_size
+@ Description: Find the segmented sizes of .text, .bss, .data in the program
+@ Use established labels for this
+@ --------------------------------------------------------
+
     push {lr}
 
 	@ the size of each segment in the program
@@ -352,15 +427,34 @@ exit_:
 @ Function: exit
 @ Cli command: exit  (exit_cmd)
 @ Description: Exits from the program
+@ Log the current session start, session time before exit
 @ ----------------------------------------
 	ldr r0, =exit_msg
 	bl printf
+
+	@ log session info before exit
+	ldr r0, =filename        @ filename
+    ldr r1, =write_mode      @ "w" write mode
+    bl fopen                 @ fopen("log.txt", "w")
+    mov r4, r0               @ FILE* in r4
+
+    ldr r1, =fmt_out         
+    ldr r2, =start_time
+    ldr r2, [r2]             @ session started time
+
+	bl get_time
+	sub r3, r0, r2			 @ session duration
+
+    mov r0, r4               @ FILE*
+    bl fprintf                
+
+    mov r0, r4
+    bl fclose                @ fclose(fp)
 
 	mov r0, #0      @ exit code = 0 (success)
     mov r7, #1      @ sys_exit and software inturrupt
     svc #0     
 	
-
 help:
 
 @ ----------------------------------------
@@ -368,10 +462,10 @@ help:
 @ Cli command: help
 @ Description: Lists available commands
 @ ----------------------------------------
-    push {lr}
-    ldr r0, =help_msg
-    bl printf
-    pop {pc}
+    push {lr}               @ Save return address to stack
+    ldr r0, =help_msg       @ Load help message string address into r0
+    bl printf               @ Print help message
+    pop {pc}                @ Restore return address and return from function
 
 
 clear:
@@ -381,44 +475,44 @@ clear:
 @ Cli command: clear
 @ Description: Clears the screen using ANSI escape sequences
 @ ----------------------------------------
-    push {lr}
-    ldr r0, =clear_seq
-    bl printf
-    pop {pc}
+    push {lr}               @ Save return address
+    ldr r0, =clear_seq      @ Load ANSI escape sequence string address
+    bl printf               @ Print escape sequence to clear screen
+    pop {pc}                @ Return from function
 
 
 
 encrypt:
 @ ----------------------------------------
 @ Function: encrypt
-@ CLI command: encrypt <shift> <string>
+@ CLI command: encrypt <shift> <text>
 @ Description: Encrypts a given word by shifting it by a constant (Caesar cipher)
 @ ----------------------------------------
-    push {r4-r10, lr}
+    push {r4-r10, lr}       @ Save used registers and return address
 
     @ Start parsing after "encrypt "
-    ldr r4, =buffer
+    ldr r4, =buffer         @ Load user input buffer
     add r4, r4, #8          @ Skip "encrypt " (7 chars + 1 space)
 
     @ Parse shift value manually
-    mov r5, #0              @ Initialize shift value
+    mov r5, #0              @ Initialize shift accumulator to 0
     mov r8, #1              @ Sign multiplier (1 for positive, -1 for negative)
 
     @ Check for negative sign
-    ldrb r0, [r4]
-    cmp r0, #'-'
-    bne parse_shift_digits
-    mov r8, #-1             @ Set negative
+    ldrb r0, [r4]           @ Load current character
+    cmp r0, #'-'            @ Compare to see if it's a minus sign
+    bne parse_shift_digits  @ If not, skip to digit parsing
+    mov r8, #-1             @ Update sign to negative
     add r4, r4, #1          @ Skip the '-'
 
 parse_shift_digits:
-    ldrb r0, [r4]
+    ldrb r0, [r4]           @ Load next character
     cmp r0, #' '            @ Check for space (end of number)
     beq shift_parsed
     cmp r0, #0              @ Check for null terminator
-    beq encrypt_error
+    beq encrypt_error       @ Jump to error
     
-    @ Check if it''s a digit
+    @ Validate that character is a digit
     cmp r0, #'0'
     blt encrypt_error
     cmp r0, #'9'
@@ -439,43 +533,43 @@ shift_parsed:
 
     @ Skip spaces before text
 skip_spaces_before_text:
-    ldrb r0, [r4]
-    cmp r0, #' '
+    ldrb r0, [r4]           @ Load character
+    cmp r0, #' '            @ Checks if it's a space
     bne text_found
-    add r4, r4, #1
+    add r4, r4, #1          @ Move to next character
     b skip_spaces_before_text
 
 text_found:
     @ Check if we have text
-    ldrb r0, [r4]
+    ldrb r0, [r4]           @ Check for empty string
     cmp r0, #0
-    beq encrypt_error
+    beq encrypt_error       @ If no text, error
 
     @ Copy text to encrypt_text_buf
-    ldr r1, =encrypt_text_buf
+    ldr r1, =encrypt_text_buf       @ Load destination buffer
 copy_text:
-    ldrb r0, [r4]
+    ldrb r0, [r4]           @ Load current character
     cmp r0, #0
     beq text_copied
-    strb r0, [r1]
+    strb r0, [r1]           @ Store character
     add r4, r4, #1
     add r1, r1, #1
     b copy_text
 
 text_copied:
-    mov r0, #0
-    strb r0, [r1]           @ Null terminate
+    mov r0, #0              @ Null terminator
+    strb r0, [r1]           @ End the copied string
 
     @ Process the text
-    ldr r1, =encrypt_text_buf
-    ldr r7, =encrypt_out_buf
+    ldr r1, =encrypt_text_buf       @ Load pointer to text
+    ldr r7, =encrypt_out_buf        @ Load output buffer
 
 encrypt_loop:
-    ldrb r2, [r1]           @ Load current character
+    ldrb r2, [r1]           @ Load character to encrypt
     cmp r2, #0              @ Check for null terminator
     beq encrypt_done
 
-    mov r3, r2              @ Copy character to r3
+    mov r3, r2              @ Copy character for manipulation
 
     @ Check if lowercase letter
     cmp r3, #'a'
@@ -531,13 +625,13 @@ encrypt_done:
     ldr r0, =encrypt_out_buf
     bl puts
 
-    pop {r4-r10, pc}
+    pop {r4-r10, pc}        @ Restore registers and return
 
 encrypt_error:
     @ Print usage message if wrong arguments
-    ldr r0, =encrypt_usage
-    bl printf
-    pop {r4-r10, pc}
+    ldr r0, =encrypt_usage  @ Load usage info string
+    bl printf               @ Print usage help
+    pop {r4-r10, pc}        @ Restore registers and return
 
 
 main:
@@ -549,77 +643,94 @@ main:
 @ ------------------------------------------
 
 shell_loop:
-    ldr r0, =cli_prompt
-    bl printf
+    ldr r0, =cli_prompt     @ Load the CLI prompt string address to r0
+    bl printf               @ Print the prompt to the terminal
 
-    ldr r0, =input_format
-    ldr r1, =buffer
-    bl scanf
+    ldr r0, =input_format   @ Load the input format string ("%49[^\n]") to r0
+    ldr r1, =buffer         @ Load the address of input buffer to r1
+    bl scanf                @ Take user input and store it in 'buffer'
 
-    bl flush_input_buffer
+    bl flush_input_buffer   @ Clean up any leftover characters from input buffer
 
     @ Check for hello command
-    ldr r0, =buffer
-    ldr r1, =hello_cmd
-    bl strcmp
-    cmp r0, #0
-    beq call_hello
+    ldr r0, =buffer         @ Load user input buffer address into r0
+    ldr r1, =hello_cmd      @ Load address of string "hello"
+    bl strcmp               @ Compare input with "hello"
+    cmp r0, #0              @ Check if comparison result is 0 (strings match)
+    beq call_hello          @ If match, branch to call_hello
 
     @ Check for exit command
-    ldr r0, =buffer
-    ldr r1, =exit_cmd
-    bl strcmp
-    cmp r0, #0
-    beq call_exit
+    ldr r0, =buffer         @ Load user input again
+    ldr r1, =exit_cmd       @ Load "exit" string
+    bl strcmp               @ Compare strings
+    cmp r0, #0              @ Check result
+    beq call_exit           @ If match, go to exit
 
     @ Check for help command
-    ldr r0, =buffer
-    ldr r1, =help_cmd
-    bl strcmp
-    cmp r0, #0
-    beq call_help
+    ldr r0, =buffer         @ Load buffer
+    ldr r1, =help_cmd       @ Load "help"
+    bl strcmp               @ Compare
+    cmp r0, #0              @ Check if strings match
+    beq call_help           @ If matched, go to help
 
     @ Check for clear command
-    ldr r0, =buffer
-    ldr r1, =clear_cmd
-    bl strcmp
-    cmp r0, #0
-    beq call_clear
+    ldr r0, =buffer         @ Load buffer
+    ldr r1, =clear_cmd      @ Load "clear"
+    bl strcmp               @ Compare with "clear"
+    cmp r0, #0              @ Check result of comparison
+    beq call_clear          @ If matched, go to clear
+
+    @ Check for performance command
+    ldr r0, =buffer         @ Load buffer
+    ldr r1, =perf_cmd     @ Load "performance"
+    bl strcmp               @ Compare input with "performance"
+    cmp r0, #0              @ If result is 0, strings match
+    beq call_performance    @ If matched, go to performance
 
     @ Check for encrypt command (using strncmp for partial match)
-    ldr r0, =buffer
-    ldr r1, =encrypt_cmd
-    mov r2, #7              @ Length of "encrypt"
-    bl strncmp
-    cmp r0, #0
-    beq call_encrypt
+    ldr r0, =buffer         @ Load buffer
+    ldr r1, =encrypt_cmd    @ Load "encrypt"
+    mov r2, #7              @ Specify length of prefix to match ("encrypt")
+    bl strncmp              @ Compare first 7 characters of input with "encrypt"
+    cmp r0, #0              @ Check if result is 0 (prefix matches)
+    beq call_encrypt        @ If matched, go to encrypt logic
 
-    b skip_command          @ If no command matched, skip to loop
+    b skip_command          @ If no command matched, skip to loop restart
+
+@ -------------------------------------------
+@ Branch labels to call respective command handlers
+@ -------------------------------------------
 
 call_hello:
-    bl hello
-    b skip_command
+    bl hello                @ Call hello function
+    b skip_command          @ Jump to cleanup and restart loop
 
 call_exit:
-
-
     bl exit_                @ This function calls svc #0 to terminate
 
 call_help:
-    bl help
-    b skip_command
+    bl help                 @ Display help message
+    b skip_command          @ After displaying help, return to main loop
 
 call_clear:
-    bl clear
-    b skip_command
+    bl clear                @ Clear the screen using ANSI escape sequence
+    b skip_command          @ After clearing screen, continue loop
+
+call_performance:
+    bl show_performance     @ Call performance measurement function
+    b skip_command          @ After showing performance, return to loop
 
 call_encrypt:
-    bl encrypt
-    b skip_command
+    bl encrypt              @ Call encryption handler
+    b skip_command          @ After encryption, return to main loop
+
+@ -------------------------------------------
+@ Cleanup and restart CLI loop
+@ -------------------------------------------
 
 skip_command:
-    bl clear_string_buffer
-    b shell_loop
+    bl clear_string_buffer  @ Clear buffer before next input
+    b shell_loop            @ Repeat CLI input loop (infinite until "exit" is entered)
 
 exit:
-__text_end:
+__text_end:                 @ Label marking end of text segment
